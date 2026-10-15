@@ -1,0 +1,355 @@
+# =====================================================================
+#  macros.cfg  (Stand 15.10.2026) – aus macros_vorschlag.cfg, korrigiert:
+#  - Filament-Temperatur wird direkt im jeweiligen Makro bestimmt (ein Hilfsmakro
+#    wirkt in Klipper erst beim NAECHSTEN Aufruf, weil Makros vor Ausfuehrung
+#    komplett ausgewertet werden)
+#  - letzte Drucktemperatur wird dauerhaft gemerkt ([save_variables] in printer.cfg)
+#  - GoPro geht auch bei CANCEL_PRINT aus
+#  Unterschiede zur alten macros.cfg sind mit  ">>"  kommentiert.
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# Mainsail-Client-Variablen
+# >> NEU. Ersetzt die eigenen PAUSE/RESUME-Makros. Die Mainsail-Versionen
+#    (mainsail.cfg) koennen damit alles, was die eigenen konnten, plus:
+#    - Heizung wird nach Idle-Timeout beim RESUME automatisch wieder
+#      auf die alte Temperatur gebracht (bisher: kalter Extruder -> Fehler
+#      oder PETG bei 200 °C weitergedruckt)
+#    - Retract/Unretract beim Pausieren/Fortsetzen
+#    - CANCEL_PRINT parkt ebenfalls
+# ---------------------------------------------------------------------
+[gcode_macro _CLIENT_VARIABLE]
+variable_use_custom_pos   : True
+variable_custom_park_x    : -15     ; wie bisher: neben dem Bett
+variable_custom_park_y    : 0
+variable_custom_park_dz   : 10.0    ; Z-Hop beim Pausieren (bisher 10)
+variable_retract          : 1.0     ; beim PAUSE
+variable_cancel_retract   : 5.0     ; beim CANCEL (wie END_PRINT)
+variable_speed_retract    : 35.0
+variable_unretract        : 1.0
+variable_speed_unretract  : 35.0
+variable_speed_hop        : 10.0    ; = max_z_velocity
+variable_speed_move       : 150.0   ; Parkfahrt mm/s
+variable_park_at_cancel   : True
+variable_park_at_cancel_x : -15
+variable_park_at_cancel_y : 210
+variable_use_fw_retract   : False
+variable_idle_timeout     : 7200    ; waehrend PAUSE 2 h statt 1 h bis Heizung aus
+variable_runout_sensor    : ""
+variable_user_pause_macro : ""
+variable_user_resume_macro: ""
+variable_user_cancel_macro: "SET_PIN PIN=gopro_power VALUE=0"   ; >> GoPro auch bei Abbruch aus
+gcode:
+
+# ---------------------------------------------------------------------
+[gcode_macro START_PRINT]
+gcode:
+    {% set BED_TEMP = params.BED_TEMP|default(60)|float %}
+    {% set EXTRUDER_TEMP = params.EXTRUDER_TEMP|default(200)|float %}
+    # >> Vorheiztemperatur relativ zur Zieltemperatur statt fix 180:
+    #    PETG 255 -> 165, PLA 215 -> 150. Weich genug fuer den Unretract,
+    #    aber deutlich weniger Oozing als bei 180.
+    {% set PREHEAT = [EXTRUDER_TEMP - 90, 150]|max %}
+    # >> Drucktemperatur dauerhaft merken -> LOAD/UNLOAD ausserhalb eines Drucks
+    SAVE_VARIABLE VARIABLE=druck_temp VALUE={EXTRUDER_TEMP|int}
+
+    SET_PIN PIN=gopro_power VALUE=1
+    G21
+    G90
+    M83
+    G92 E0
+    M220 S100
+    M221 S100
+    BED_MESH_CLEAR
+
+    # --- Heizen: sofort auf Zieltemperatur ---------------------------
+    # >> Bisher M140 S50 -> warten -> spaeter M140 S{BED_TEMP}. Das kostet
+    #    die PID-Einregelzeit bei 50 °C und das Mesh wurde auf einem 50 °C
+    #    warmen Bett gemessen, gedruckt wird aber bei 60/75 °C.
+    M140 S{BED_TEMP}
+    M104 S{PREHEAT}
+
+    M117 Homing
+    G28
+    G1 X-14 Y221 Z15 F9000          ; >> F5000 -> F9000 (150 mm/s)
+
+    # --- Bett fast auf Temperatur, dann Z-Referenz + Mesh -------------
+    # >> Warten bis 8 °C unter Ziel: die letzten Grad holt das Bett
+    #    waehrend G28 Z + Mesh auf, es entsteht keine Leerlaufzeit.
+    M117 Bett heizt
+    TEMPERATURE_WAIT SENSOR=heater_bed MINIMUM={BED_TEMP - 8}
+
+    # Duese jetzt voll heizen: 40-W-Patrone braucht von 160 auf 250 °C
+    # etwa so lange wie G28 Z + adaptives Mesh.
+    M104 S{EXTRUDER_TEMP}
+    M117 Z-Referenz
+    G28 Z                           ; Z neu auf dem warmen Bett (BDsensor-Drift)
+    M117 Mesh
+    BED_MESH_CALIBRATE ADAPTIVE=1
+
+    # >> Optional Echtzeit-Leveling des BDsensors fuer die erste Schicht.
+    #    END_PRINT schaltet es bisher aus, obwohl es nirgends eingeschaltet
+    #    wird. Zum Aktivieren Kommentar entfernen (erst ohne Druckauftrag testen):
+    #BDSENSOR_SET REAL_TIME_HEIGHT=0.4
+
+    M117 Heizen
+    TEMPERATURE_WAIT SENSOR=heater_bed MINIMUM={BED_TEMP - 1}
+    TEMPERATURE_WAIT SENSOR=extruder MINIMUM={EXTRUDER_TEMP}
+
+    # --- Prime (Ablauf wie bisher, nur schnellere Leerfahrten) --------
+    G1 Z10 F600
+    G1 X-14 Y30 F9000               ; >> F2900 -> F9000
+    G1 Z0.35 F600
+    M117 Rotze weg
+    G1 E5 F1500                     ; End-Retract (5 mm) zurueck
+    G92 E0
+    G1 E5 F300                      ; Blob neben dem Bett
+    G1 X20 F2000                    ; ueber die Bettkante wischen
+    G1 Z0.5 F600
+    G92 E0
+    G1 X5 Y40 F6000                 ; >> Default-F -> F6000
+    G1 Z0.24 F600
+    G1 Y80 E4 F1400                 ; Prime-Linie
+    G1 E-0.5 F3000
+    G1 Z5 F600
+    G1 X10 Y10 F9000                ; >> F1400 -> F9000
+    G92 E0
+    M117 LET'S GOOOOO
+
+# ---------------------------------------------------------------------
+[gcode_macro END_PRINT]
+gcode:
+    {% set max_z = printer.toolhead.axis_maximum.z|float %}
+    {% set act_z = printer.toolhead.position.z|float %}
+
+    M400
+    BDSENSOR_SET REAL_TIME_HEIGHT=0
+    M104 S0
+    G92 E0
+
+    G91
+    G1 X-2 Y-2 Z2 E-5 F3000         ; Wischen, 2 mm hoch, 5 mm Retract
+    G90
+    G1 X-15 Y210 F9000              ; >> F5000 -> F9000
+
+    {% if printer['output_pin unload_am_ende'].value > 0 %}
+        M117 Entlade Fil.
+        G91
+        G1 E-20 F600
+        G90
+    {% else %}
+        M117 Fil. bleibt
+    {% endif %}
+
+    # Bett ablassen (70 mm, sonst so weit wie moeglich)
+    {% if act_z < (max_z - 70.0) %}
+        G1 Z{act_z + 70.0} F600
+    {% elif act_z < (max_z - 10.0) %}
+        G1 Z{max_z - 10.0} F600
+    {% endif %}
+
+    TURN_OFF_HEATERS                ; >> statt einzeln M140 S0
+    M106 S0
+    SET_PIN PIN=gopro_power VALUE=0
+
+    # >> M84 ignoriert in Klipper die Achsangaben und schaltet IMMER alle
+    #    Stepper ab – "M84 X Y E" hat Z also bisher mit abgeschaltet.
+    #    So bleibt Z wirklich bestromt (bis idle_timeout greift):
+    SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0
+    SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0
+    SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0
+
+    M117 Druck fertig!
+
+# ---------------------------------------------------------------------
+# Filamentwechsel
+# ---------------------------------------------------------------------
+# >> Temperatur fuer Laden/Entladen (in beiden Makros identisch):
+#    1. aktuelles Heizziel (laufender Druck / M600 / manuell aufgeheizt)
+#    2. von Mainsail-PAUSE gemerkte Temperatur (Heizung nach Timeout aus)
+#    3. Drucktemperatur des letzten Drucks (save_variables, uebersteht Neustarts)
+#    4. sonst 240 (fuer PLA und PETG brauchbar)
+#    Immer ueberschreibbar: UNLOAD_FILAMENT TEMP=215
+
+[gcode_macro UNLOAD_FILAMENT]
+description: Zieht das Filament sicher aus dem Extruder
+gcode:
+    {% set saved = printer['gcode_macro RESUME'].last_extruder_temp %}
+    {% set gemerkt = printer.save_variables.variables.druck_temp|default(240) %}
+    {% if printer.extruder.target > 170 %}{% set t = printer.extruder.target %}
+    {% elif saved.temp > 170 %}{% set t = saved.temp %}
+    {% else %}{% set t = gemerkt %}{% endif %}
+    {% set TEMP = params.TEMP|default(t)|float %}
+    RESPOND MSG="Filament-Temperatur: {TEMP|int} °C"
+    {% if printer.extruder.temperature < TEMP - 5 %}
+        M117 Heize auf {TEMP}
+        M104 S{TEMP}
+        TEMPERATURE_WAIT SENSOR=extruder MINIMUM={TEMP - 5}
+    {% endif %}
+    M117 Entlade Fil.
+    G91
+    G1 E5 F300
+    G1 E-10 F3000
+    G1 E-20 F600
+    G90
+    M117 Fil. entladen!
+
+[gcode_macro LOAD_FILAMENT]
+description: Laedt neues Filament und spuelt die alte Farbe raus
+gcode:
+    {% set saved = printer['gcode_macro RESUME'].last_extruder_temp %}
+    {% set gemerkt = printer.save_variables.variables.druck_temp|default(240) %}
+    {% if printer.extruder.target > 170 %}{% set t = printer.extruder.target %}
+    {% elif saved.temp > 170 %}{% set t = saved.temp %}
+    {% else %}{% set t = gemerkt %}{% endif %}
+    {% set TEMP = params.TEMP|default(t)|float %}
+    RESPOND MSG="Filament-Temperatur: {TEMP|int} °C"
+    {% if printer.extruder.temperature < TEMP - 5 %}
+        M117 Heize auf {TEMP}
+        M104 S{TEMP}
+        TEMPERATURE_WAIT SENSOR=extruder MINIMUM={TEMP - 5}
+    {% endif %}
+    M117 Lade Fil.
+    G91
+    G1 E30 F200                     ; >> F300 -> F200: 3,3 mm/s = 8 mm³/s, schonendes Spuelen
+    G1 E-3 F600
+    G90
+    M117 Fil. geladen!
+
+[gcode_macro _PURGE_FILAMENT]
+gcode:
+    G91
+    G1 E25 F200
+    G90
+    G4 P500
+
+[gcode_macro M600]
+description: Filamentwechsel Start
+gcode:
+    PAUSE                           ; Mainsail-PAUSE (parkt, retract, merkt Temperatur)
+    UNLOAD_FILAMENT                 ; >> ohne TEMP= -> nimmt die Drucktemperatur
+    _LED_TASTER_ON
+    M117 Filament einlegen & Taster druecken
+
+# >> Die eigenen [gcode_macro PAUSE] / [gcode_macro RESUME] sind entfernt.
+#    Sie haben die Mainsail-Versionen bisher stillschweigend ueberschrieben
+#    (gleicher Abschnittsname, spaetere Datei gewinnt).
+
+# ---------------------------------------------------------------------
+# Smart Power Logic (unveraendert bis auf LOAD_FILAMENT ohne TEMP=200)
+# ---------------------------------------------------------------------
+[gcode_macro SMART_POWER_BUTTON]
+variable_shutdown_mode: 0
+variable_led_state: 0
+gcode:
+  {% if printer.pause_resume.is_paused %}
+      _LED_TASTER_OFF
+      M117 Lade Filament...
+      LOAD_FILAMENT                 ; >> vorher LOAD_FILAMENT TEMP=200
+      G4 P2000
+      _PURGE_FILAMENT
+      RESUME
+  {% else %}
+      {% set mode = printer["gcode_macro SMART_POWER_BUTTON"].shutdown_mode %}
+      {% if mode == 0 %}
+          SET_GCODE_VARIABLE MACRO=SMART_POWER_BUTTON VARIABLE=shutdown_mode VALUE=1
+          SET_GCODE_VARIABLE MACRO=SMART_POWER_BUTTON VARIABLE=led_state VALUE=0
+          UPDATE_DELAYED_GCODE ID=led_blinker DURATION=0.8
+          M117 Drucker Off...
+          {action_respond_info("Modus 1 aktiv: Drucker wird nach Abkuehlen abgeschaltet.")}
+          UPDATE_DELAYED_GCODE ID=wait_for_temp DURATION=1.0
+      {% elif mode == 1 %}
+          SET_GCODE_VARIABLE MACRO=SMART_POWER_BUTTON VARIABLE=shutdown_mode VALUE=2
+          UPDATE_DELAYED_GCODE ID=led_blinker DURATION=0.3
+          M117 Pi Shutdown...
+          {action_respond_info("Modus 2 aktiv: Pi & Drucker werden nach Abkuehlen abgeschaltet.")}
+      {% else %}
+          SET_GCODE_VARIABLE MACRO=SMART_POWER_BUTTON VARIABLE=shutdown_mode VALUE=0
+          UPDATE_DELAYED_GCODE ID=led_blinker DURATION=0
+          UPDATE_DELAYED_GCODE ID=wait_for_temp DURATION=0
+          {action_call_remote_method("set_device_power", device="status_led", state="off")}
+          M117 Abbruch!
+          {action_respond_info("Shutdown durch Taster abgebrochen.")}
+      {% endif %}
+  {% endif %}
+
+[delayed_gcode led_blinker]
+gcode:
+  {% set mode = printer["gcode_macro SMART_POWER_BUTTON"].shutdown_mode %}
+  {% set current_state = printer["gcode_macro SMART_POWER_BUTTON"].led_state %}
+  {% if mode > 0 %}
+    {% if current_state == 0 %}
+      {action_call_remote_method("set_device_power", device="status_led", state="on")}
+      SET_GCODE_VARIABLE MACRO=SMART_POWER_BUTTON VARIABLE=led_state VALUE=1
+    {% else %}
+      {action_call_remote_method("set_device_power", device="status_led", state="off")}
+      SET_GCODE_VARIABLE MACRO=SMART_POWER_BUTTON VARIABLE=led_state VALUE=0
+    {% endif %}
+    {% if mode == 1 %}
+      UPDATE_DELAYED_GCODE ID=led_blinker DURATION=0.8
+    {% elif mode == 2 %}
+      UPDATE_DELAYED_GCODE ID=led_blinker DURATION=0.3
+    {% endif %}
+  {% endif %}
+
+[gcode_macro TEMPERATURE_WAIT_AND_OFF]
+gcode:
+  {% set mode = printer["gcode_macro SMART_POWER_BUTTON"].shutdown_mode %}
+  {% if mode > 0 %}
+    {% if printer.print_stats.state == "printing" or printer.print_stats.state == "paused" %}
+      M117 Warte a. Ende
+      UPDATE_DELAYED_GCODE ID=wait_for_temp DURATION=10
+    {% elif printer.extruder.temperature > 50 %}
+      M117 Hotend kuehlt
+      UPDATE_DELAYED_GCODE ID=wait_for_temp DURATION=10
+    {% else %}
+      M117 Power Off!
+      SET_GCODE_VARIABLE MACRO=SMART_POWER_BUTTON VARIABLE=shutdown_mode VALUE=0
+      UPDATE_DELAYED_GCODE ID=led_blinker DURATION=0
+      {action_call_remote_method("set_device_power", device="status_led", state="off")}
+      G4 P1000
+      {% if mode == 1 %}
+        {action_call_remote_method("set_device_power", device="mein_drucker", state="off")}
+      {% elif mode == 2 %}
+        {action_call_remote_method("shutdown_machine")}
+      {% endif %}
+    {% endif %}
+  {% endif %}
+
+[delayed_gcode wait_for_temp]
+gcode:
+  TEMPERATURE_WAIT_AND_OFF
+
+[delayed_gcode boot_blinker]
+initial_duration: 1.0
+gcode:
+  {action_call_remote_method("set_device_power", device="status_led", state="off")}
+  G4 P250
+  {action_call_remote_method("set_device_power", device="status_led", state="on")}
+  G4 P250
+  {action_call_remote_method("set_device_power", device="status_led", state="off")}
+  G4 P250
+  {action_call_remote_method("set_device_power", device="status_led", state="on")}
+  G4 P250
+  {action_call_remote_method("set_device_power", device="status_led", state="off")}
+  M117 Drucker bereit!
+
+[gcode_macro _LED_TASTER_ON]
+gcode:
+    {action_call_remote_method("set_device_power", device="status_led", state="on")}
+
+[gcode_macro _LED_TASTER_OFF]
+gcode:
+    {action_call_remote_method("set_device_power", device="status_led", state="off")}
+
+
+[gcode_macro FILAMENT_TEMP_INFO]
+description: Zeigt, welche Temperatur LOAD/UNLOAD_FILAMENT gerade nehmen wuerden (ohne Bewegung)
+gcode:
+    {% set saved = printer['gcode_macro RESUME'].last_extruder_temp %}
+    {% set gemerkt = printer.save_variables.variables.druck_temp|default(240) %}
+    {% if printer.extruder.target > 170 %}{% set t = printer.extruder.target %}
+    {% elif saved.temp > 170 %}{% set t = saved.temp %}
+    {% else %}{% set t = gemerkt %}{% endif %}
+    {% set TEMP = params.TEMP|default(t)|float %}
+    RESPOND MSG="LOAD/UNLOAD wuerde heizen auf: {TEMP|int} °C"
