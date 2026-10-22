@@ -1,0 +1,20 @@
+# ADXL345 am Pico W (optional, seit 2026-10-22)
+# Aktiv nur, wenn diese Datei adxl.cfg heisst. Aus = adxl.cfg.aus (Klipper startet dann ohne Pico).
+# Umschalten: in Mainsail umbenennen, dann Restart.
+
+[mcu pico]
+# Raspberry Pi Pico W (Klipper-Firmware) per USB am Pi, nur fuer den ADXL345
+serial: /dev/serial/by-id/usb-Klipper_rp2040_E6647C740360C435-if00
+
+[adxl345]
+# ADXL345 am Pico: VCC=Pin36 GND=Pin38 CS=Pin2(GP1) SDO=Pin1(GP0) SDA=Pin5(GP3) SCL=Pin4(GP2)
+#cs_pin: rpi:None          (alt: ADXL direkt am Pi)
+cs_pin: pico:gpio1
+spi_bus: spi0a
+# Sensor am Druckkopf hochkant (2026-10-14 per Testfahrt bestimmt): Drucker-X = Sensor -y, Drucker-Z = Sensor x
+axes_map: -y, z, x
+
+[resonance_tester]
+accel_chip: adxl345
+probe_points:
+    115, 115, 20
