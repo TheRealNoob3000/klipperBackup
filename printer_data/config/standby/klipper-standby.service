@@ -1,0 +1,12 @@
+[Unit]
+Description=Klipper Standby (CR-20 Pro, Drucker aus)
+After=klipper-mcu.service
+Conflicts=klipper.service
+
+[Service]
+Type=simple
+User=juri
+WorkingDirectory=/home/juri/klipper
+ExecStart=/home/juri/klippy-env/bin/python /home/juri/klipper/klippy/klippy.py /home/juri/printer_data/config/standby/standby.cfg -l /home/juri/printer_data/logs/klippy-standby.log -a /home/juri/printer_data/comms/klippy.sock
+Restart=always
+RestartSec=10

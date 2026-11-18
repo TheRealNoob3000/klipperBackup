@@ -1,0 +1,11 @@
+#!/bin/sh
+# Laeuft als root nach jedem Stopp von klipper.service.
+# Startet den Standby-Klipper nur, wenn Moonraker das Relais als "off" meldet.
+# Bei Neustart/Absturz mit eingeschaltetem Drucker passiert also nichts.
+case "$(systemctl is-system-running 2>/dev/null)" in stopping) exit 0;; esac
+s=$(curl -s -m 4 "http://127.0.0.1:7125/machine/device_power/device?device=mein_drucker" 2>/dev/null)
+case "$s" in
+  *'"mein_drucker": "off"'*|*'"mein_drucker":"off"'*)
+    systemctl --no-block start klipper-standby.service ;;
+esac
+exit 0
